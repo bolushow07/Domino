@@ -472,23 +472,21 @@ body {
 ═══════════════════════════════════════ */
 const SUPABASE_URL  = 'https://owsxbupbzeqqvkerbgsy.supabase.co';
 const SUPABASE_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im93c3hidXBiemVxcXZrZXJiZ3N5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzNzk4MDMsImV4cCI6MjA5Njk1NTgwM30.V9ZQsrdJWss1687rOBuhpBfbTRZLwYz4aZCEkQ040Qk';
-const sb = (SUPABASE_URL !== 'TU_URL')
-  ? supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
-  : null;
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /* ── Online state ── */
 const O = {
-  roomId:   null,   // código 4 letras
-  myIdx:    null,   // 0-3 (seat index)
-  isHost:   false,
-  channel:  null,   // Supabase Realtime channel
+  roomId: null,
+  myIdx:  null,   // 0-3
+  isHost: false,
+  channel: null,
+  lastEventId: 0, // track processed events
 };
 
-function _sbOk(){ if(!sb){alert('Configura SUPABASE_URL y SUPABASE_KEY en el código');return false;} return true; }
+function _sbOk(){ return true; }
 function _randCode(){ return Math.random().toString(36).slice(2,6).toUpperCase(); }
 function _lobbyStatus(msg){ document.getElementById('lobby-status').textContent=msg; }
 
-/* ── Show join input ── */
 function showJoinInput(){
   const w=document.getElementById('join-input-wrap');
   w.style.display=w.style.display==='flex'?'none':'flex';
@@ -496,25 +494,22 @@ function showJoinInput(){
 
 /* ── Create room ── */
 async function onlineCreate(){
-  if(!_sbOk()) return;
   const name=document.getElementById('online-name').value.trim()||'Jugador';
   _lobbyStatus('Creando sala…');
   const code=_randCode();
-  const initialPlayers=[{name,idx:0,ready:false}];
+  const initialPlayers=[{name,idx:0}];
   const {error}=await sb.from('rooms').insert({
-    id:code,
-    phase:'waiting',
+    id:code, phase:'waiting',
     players:initialPlayers,
     state:{}
   });
   if(error){_lobbyStatus('Error: '+error.message);return;}
   O.roomId=code; O.myIdx=0; O.isHost=true;
-  _enterLobbyRoom(code, initialPlayers);
+  _enterLobbyRoom(code,initialPlayers);
 }
 
 /* ── Join room ── */
 async function onlineJoin(){
-  if(!_sbOk()) return;
   const name=document.getElementById('online-name').value.trim()||'Jugador';
   const code=document.getElementById('room-code-input').value.trim().toUpperCase();
   if(code.length!==4){_lobbyStatus('Introduce un código de 4 letras');return;}
@@ -525,17 +520,16 @@ async function onlineJoin(){
   const players=data.players||[];
   if(players.length>=4){_lobbyStatus('Sala llena (4/4)');return;}
   const myIdx=players.length;
-  players.push({name,idx:myIdx,ready:false});
-  await sb.from('rooms').update({players}).eq('id',code);
+  players.push({name,idx:myIdx});
+  const {error:e2}=await sb.from('rooms').update({players}).eq('id',code);
+  if(e2){_lobbyStatus('Error: '+e2.message);return;}
   O.roomId=code; O.myIdx=myIdx; O.isHost=false;
-  _enterLobbyRoom(code, players);
+  _enterLobbyRoom(code,players);
 }
 
-/* ── Enter lobby room UI + subscribe ── */
-function _enterLobbyRoom(code, players){
+function _enterLobbyRoom(code,players){
   document.getElementById('lobby-join').style.display='none';
-  const room=document.getElementById('lobby-room');
-  room.style.display='flex';
+  document.getElementById('lobby-room').style.display='flex';
   document.getElementById('room-code-display').textContent=code;
   _renderLobbyPlayers(players);
   _subscribeLobby(code);
@@ -543,156 +537,178 @@ function _enterLobbyRoom(code, players){
 
 function _renderLobbyPlayers(players){
   const el=document.getElementById('lobby-players-list');
-  const seats=['🟡 Jugador 1','🔵 Jugador 2','🟡 Jugador 3','🔵 Jugador 4'];
+  const seats=['🟡 Equipo Oro — Asiento 1','🔵 Equipo Azul — Asiento 2','🟡 Equipo Oro — Asiento 3','🔵 Equipo Azul — Asiento 4'];
   el.innerHTML=seats.map((s,i)=>{
-    const p=players.find(p=>p.idx===i);
+    const p=players.find(x=>x.idx===i);
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;
       border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07)">
-      <span style="font-size:.8rem;color:var(--muted);width:80px">${s}</span>
+      <span style="font-size:.75rem;color:var(--muted);flex:1">${s}</span>
       <span style="font-size:.85rem;color:${p?'var(--text)':'var(--muted)'}">${p?p.name:'Esperando…'}</span>
-      ${p&&p.idx===O.myIdx?'<span style="font-size:.65rem;color:var(--gold);margin-left:auto">Tú</span>':''}
+      ${p&&p.idx===O.myIdx?'<span style="font-size:.65rem;color:var(--gold)">Tú</span>':''}
     </div>`;
   }).join('');
-
   const full=players.length===4;
   document.getElementById('lobby-waiting-msg').style.display=full?'none':'block';
-  const btn=document.getElementById('btn-start-online');
-  btn.style.display=(full&&O.isHost)?'block':'none';
+  document.getElementById('btn-start-online').style.display=(full&&O.isHost)?'block':'none';
 }
 
-/* ── Realtime subscription in lobby ── */
+/* ── Realtime lobby subscription ── */
 function _subscribeLobby(code){
   if(O.channel) sb.removeChannel(O.channel);
-  O.channel=sb.channel(`room-${code}`)
+  O.channel=sb.channel(`lobby-${code}`)
     .on('postgres_changes',{event:'UPDATE',schema:'public',table:'rooms',filter:`id=eq.${code}`},
       payload=>{
         const room=payload.new;
         _renderLobbyPlayers(room.players||[]);
-        // Host started the game
-        if(room.phase==='playing'&&room.state&&Object.keys(room.state).length>0){
+        if(room.phase==='playing'&&room.state&&room.state.hands){
           _onlineLoadGame(room.state);
         }
-      })
-    .on('postgres_changes',{event:'INSERT',schema:'public',table:'room_events',filter:`room_id=eq.${code}`},
-      payload=>{
-        if(!O.isHost) _onlineApplyEvent(payload.new);
       })
     .subscribe();
 }
 
-/* ── Host starts the game ── */
+/* ── Host deals and publishes initial state ── */
 async function onlineStartGame(){
-  // Deal and build initial state as host
-  S.gameMode='online';
-  S.players=[
-    {name:'',team:0,human:false},
-    {name:'',team:1,human:false},
-    {name:'',team:0,human:false},
-    {name:'',team:1,human:false},
-  ];
   const roomData=(await sb.from('rooms').select('players').eq('id',O.roomId).single()).data;
-  (roomData.players||[]).forEach(p=>{S.players[p.idx].name=p.name;});
-  S.players[O.myIdx].human=true;
+  S.players=(roomData.players||[]).map((p,i)=>({
+    name:p.name, team:i%2===0?0:1, human:false
+  }));
+  // fill missing seats if <4 (shouldn't happen but safety)
+  while(S.players.length<4) S.players.push({name:`J${S.players.length+1}`,team:S.players.length%2,human:false});
 
-  S.scoreLimit=150; S.teamScores=[0,0]; S.roundNum=0; S.gameActive=true;
-  initLayout(); deal();
-  S.cur=firstPlayer();
+  S.scoreLimit=150; S.teamScores=[0,0]; S.roundNum=1; S.gameActive=true;
   S.chain=[]; S.leftEnd=-1; S.rightEnd=-1;
   S.passing=[false,false,false,false];
+  initLayout();
+  deal(); // host deals all 4 hands
+  S.cur=firstPlayer();
 
-  const state=_serializeState();
-  await sb.from('rooms').update({phase:'playing',state}).eq('id',O.roomId);
-  _launchGame();
-}
-
-/* ── Non-host receives game start ── */
-function _onlineLoadGame(state){
-  S.gameMode='online';
-  _deserializeState(state);
-  S.players[O.myIdx].human=true;
-  _launchGame();
-}
-
-function _launchGame(){
-  closeModals();
-  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
-  document.getElementById('game-screen').classList.add('active');
-  updateHdr();
-  document.getElementById('barea').innerHTML='';
-  hideEnds();
-  clearLog();
-  renderAll();
-  log(`Ronda ${S.roundNum} — Empieza ${S.players[S.cur].name}`,S.players[S.cur].team);
-  setStatus(`Turno de ${S.players[S.cur].name}`);
-  document.getElementById('btnpass').style.display='none';
-  if(S.cur===O.myIdx) renderAll();
-  else { renderAll(); }
-  if(!S.players[S.cur].human) schedAI();
-}
-
-/* ── Serialize / deserialize game state ── */
-function _serializeState(){
-  return{
+  // Publish complete state (including all hands) to rooms
+  const state={
     players:S.players.map(p=>({name:p.name,team:p.team})),
-    hands:S.hands,
-    scoreLimit:S.scoreLimit,
+    hands:S.hands,       // all 4 hands — each client will only USE their own
     teamScores:S.teamScores,
+    scoreLimit:S.scoreLimit,
     roundNum:S.roundNum,
     cur:S.cur,
     chain:S.chain,
     leftEnd:S.leftEnd,
     rightEnd:S.rightEnd,
     passing:S.passing,
-    gameActive:S.gameActive,
   };
-}
-function _deserializeState(st){
-  S.players=st.players.map((p,i)=>({...p,human:i===O.myIdx}));
-  S.hands=st.hands;
-  S.scoreLimit=st.scoreLimit;
-  S.teamScores=st.teamScores;
-  S.roundNum=st.roundNum;
-  S.cur=st.cur;
-  S.chain=st.chain;
-  S.leftEnd=st.leftEnd;
-  S.rightEnd=st.rightEnd;
-  S.passing=st.passing;
-  S.gameActive=st.gameActive;
-  initLayout();
-  if(S.chain.length>0){ _recomputeLayout(); }
+  await sb.from('rooms').update({phase:'playing',state}).eq('id',O.roomId);
+  // Host also launches locally
+  _launchOnline(state);
 }
 
-/* ── Push a move event (non-host players) ── */
-async function _pushEvent(type, payload){
-  if(!sb||!O.roomId) return;
-  await sb.from('room_events').insert({
+/* ── Every client (including host) loads the game from state ── */
+function _onlineLoadGame(state){
+  if(document.getElementById('game-screen').classList.contains('active')) return; // already in game
+  _launchOnline(state);
+}
+
+function _launchOnline(state){
+  // Set up local S from state
+  S.players=state.players.map((p,i)=>({...p,human:i===O.myIdx}));
+  S.hands=state.hands;
+  S.teamScores=state.teamScores||[0,0];
+  S.scoreLimit=state.scoreLimit||150;
+  S.roundNum=state.roundNum||1;
+  S.cur=state.cur;
+  S.chain=state.chain||[];
+  S.leftEnd=state.leftEnd??-1;
+  S.rightEnd=state.rightEnd??-1;
+  S.passing=state.passing||[false,false,false,false];
+  S.gameActive=true;
+  S.gameMode='online';
+  S.selected=null;
+  initLayout();
+  if(S.chain.length>0) _recomputeLayout();
+
+  // Switch to game screen
+  closeModals();
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById('game-screen').classList.add('active');
+  updateHdr();
+  document.getElementById('barea').innerHTML='';
+  if(S.chain.length>0){_recomputeLayout();_renderAllTiles();}
+  hideEnds();
+  clearLog();
+  renderAll();
+  log(`Ronda ${S.roundNum} — Empieza ${S.players[S.cur].name}`,S.players[S.cur].team);
+  _onlineSetTurn();
+
+  // Subscribe to moves
+  _subscribeGame();
+}
+
+function _onlineSetTurn(){
+  const isMyTurn=(S.cur===O.myIdx);
+  setStatus(isMyTurn?'Tu turno — elige una ficha':`Turno de ${S.players[S.cur].name}`);
+  document.getElementById('btnpass').style.display='none';
+  hideEnds();
+
+  if(!isMyTurn) return;
+
+  // Check if I can play
+  const hand=S.hands[O.myIdx];
+  const hasPlay=hand.some(t=>canPlayT(t));
+  if(!hasPlay){
+    setStatus('Sin jugadas — debes pasar');
+    document.getElementById('btnpass').style.display='inline-flex';
+  }
+  renderAll();
+}
+
+/* ── Subscribe to game moves ── */
+function _subscribeGame(){
+  // Reuse channel or create new one for game events
+  if(O.channel) sb.removeChannel(O.channel);
+  O.channel=sb.channel(`game-${O.roomId}`)
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'room_events',
+      filter:`room_id=eq.${O.roomId}`},
+      payload=>{
+        const ev=payload.new;
+        if(ev.id<=O.lastEventId) return; // already processed
+        O.lastEventId=ev.id;
+        if(ev.player_idx===O.myIdx) return; // my own event, already applied
+        _applyMove(ev.type, ev.payload);
+      })
+    .subscribe();
+}
+
+/* ── Apply a move from another player ── */
+function _applyMove(type, payload){
+  if(type==='place'){
+    const{playerIdx,tileIdx,side}=payload;
+    doPlace(playerIdx,tileIdx,side);
+  } else if(type==='pass'){
+    const{playerIdx}=payload;
+    S.passing[playerIdx]=true;
+    addLog(`${S.players[playerIdx].name} pasa`,S.players[playerIdx].team);
+    if(S.passing.every(x=>x)){endRound('cierre',-1);return;}
+    S.cur=(S.cur+1)%4;
+    highlightCur();
+    renderAll();
+    _onlineSetTurn();
+  }
+}
+
+/* ── Send my move to Supabase ── */
+async function _sendMove(type, payload){
+  const {data}=await sb.from('room_events').insert({
     room_id:O.roomId,
     player_idx:O.myIdx,
     type,
     payload
-  });
-}
-
-/* ── Apply event received from Realtime (host applies other players' moves) ── */
-async function _onlineApplyEvent(ev){
-  if(!O.isHost) return; // only host processes moves
-  if(ev.type==='place'){
-    const{playerIdx,tileIdx,side}=ev.payload;
-    doPlace(playerIdx,tileIdx,side);
-    // After applying, push updated state to rooms table
-    const state=_serializeState();
-    await sb.from('rooms').update({state}).eq('id',O.roomId);
-  } else if(ev.type==='pass'){
-    humanPass();
-    const state=_serializeState();
-    await sb.from('rooms').update({state}).eq('id',O.roomId);
-  }
+  }).select().single();
+  if(data) O.lastEventId=data.id; // mark as processed so we don't re-apply it
 }
 
 /* ── Online leave ── */
 async function onlineLeave(){
   if(O.channel) sb.removeChannel(O.channel);
-  O.roomId=null; O.myIdx=null; O.isHost=false; O.channel=null;
+  O.roomId=null; O.myIdx=null; O.isHost=false; O.channel=null; O.lastEventId=0;
   document.getElementById('lobby-join').style.display='flex';
   document.getElementById('lobby-room').style.display='none';
   document.getElementById('join-input-wrap').style.display='none';
@@ -1045,12 +1061,9 @@ function doPlace(player,tileIdx,side){
   highlightCur();
   addBoardTile(visA,visB,side,S.chain.length===1,isDouble);
 
-  // Online: non-host pushes move to Supabase; host applies directly
-  if(S.gameMode==='online' && player===O.myIdx && !O.isHost){
-    _pushEvent('place',{playerIdx:player,tileIdx,side});
-  } else if(S.gameMode==='online' && O.isHost){
-    // Host already applied locally; push updated state for others
-    sb.from('rooms').update({state:_serializeState()}).eq('id',O.roomId);
+  // Online: send move to all other players
+  if(S.gameMode==='online'){
+    _sendMove('place',{playerIdx:player,tileIdx,side});
   }
 
   if(S.hands[player].length===0){endRound('domino',player);return;}
@@ -1204,14 +1217,13 @@ function nextTurn(){
   }
 
   S.passing[S.cur]=false;
-  if(S.players[S.cur].human){
+  if(S.gameMode==='online'){
+    S.players[S.cur].human=(S.cur===O.myIdx);
+    renderAll();
+    _onlineSetTurn();
+  } else if(S.players[S.cur].human){
     if(S.gameMode==='local'){
       showPassDevice(S.cur);
-    } else if(S.gameMode==='online'){
-      // Only the player whose seat it is can interact
-      S.players[S.cur].human = (S.cur===O.myIdx);
-      renderAll();
-      if(S.cur!==O.myIdx) setStatus(`Turno de ${S.players[S.cur].name} — esperando…`);
     } else {
       renderAll();
     }
@@ -1277,9 +1289,17 @@ function renderHandN(p){
 function humanPass(){
   if(!S.players[S.cur].human) return;
   document.getElementById('btnpass').style.display='none';
-  if(S.gameMode==='online' && !O.isHost){
-    _pushEvent('pass',{playerIdx:O.myIdx});
-    return; // host will apply and update state
+  if(S.gameMode==='online'){
+    _sendMove('pass',{playerIdx:O.myIdx});
+    // Apply locally too
+    S.passing[O.myIdx]=true;
+    addLog(`${S.players[O.myIdx].name} pasa`,S.players[O.myIdx].team);
+    if(S.passing.every(x=>x)){endRound('cierre',-1);return;}
+    S.cur=(S.cur+1)%4;
+    highlightCur();
+    renderAll();
+    _onlineSetTurn();
+    return;
   }
   nextTurn();
 }
