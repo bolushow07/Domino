@@ -470,8 +470,8 @@ body {
    → Rellena TU_URL y TU_ANON_KEY cuando
      tengas el proyecto creado en supabase.com
 ═══════════════════════════════════════ */
-const SUPABASE_URL  = 'TU_URL';       // ej: https://xxxx.supabase.co
-const SUPABASE_KEY  = 'TU_ANON_KEY';  // empieza por eyJ...
+const SUPABASE_URL  = 'https://owsxbupbzeqqvkerbgsy.supabase.co';
+const SUPABASE_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im93c3hidXBiemVxcXZrZXJiZ3N5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzNzk4MDMsImV4cCI6MjA5Njk1NTgwM30.V9ZQsrdJWss1687rOBuhpBfbTRZLwYz4aZCEkQ040Qk';
 const sb = (SUPABASE_URL !== 'TU_URL')
   ? supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
   : null;
